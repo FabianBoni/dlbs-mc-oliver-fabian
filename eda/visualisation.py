@@ -103,7 +103,7 @@ class ImageEDA:
         print(f"Gesamtzahl der Bilder: {len(self.image_data)}")
         print(f"Aufschlüsselung nach Kategorien:\n{counts}")
 
-    def show_random_samples(self, samples_per_category=5, figsize=(15, 10)):
+    def show_random_samples(self, samples_per_category=1, figsize=(35, 20)):
         """
         Zeigt zufällige Beispielbilder aus jeder Kategorie an.
 
@@ -112,37 +112,60 @@ class ImageEDA:
             figsize (tuple): Größe der Abbildung
         """
         total_categories = len(self.categories)
+        
+        # Erstelle einzelne Subplots anstatt einer gemeinsamen Figur
         fig, axes = plt.subplots(
-            total_categories, samples_per_category, figsize=figsize
+            nrows=total_categories, 
+            ncols=samples_per_category, 
+            figsize=figsize,
+            constrained_layout=True  # Aktiviere constrained_layout
         )
 
+        # Stelle sicher, dass axes immer 2D ist, auch bei einer Kategorie
         if total_categories == 1:
-            axes = [axes]
-
+            axes = axes.reshape(1, -1)
+        
         for i, category in enumerate(self.categories):
-            category_samples = (
-                self.image_data[self.image_data["category"] == category]["path"]
-                .sample(
-                    min(
-                        samples_per_category,
-                        len(self.image_data[self.image_data["category"] == category]),
-                    )
-                )
-                .tolist()
-            )
-
-            for j, img_path in enumerate(category_samples):
-                if j < samples_per_category:  # Sicherheitsüberprüfung
-                    img = plt.imread(img_path)
-                    if total_categories == 1:
-                        ax = axes[j]
-                    else:
-                        ax = axes[i, j]
-                    ax.imshow(img)
-                    ax.set_title(f"{category}")
-                    ax.axis("off")
-
-        plt.tight_layout()
+            # Hole Kategorieproben sicher
+            category_data = self.image_data[self.image_data["category"] == category]
+            sample_count = min(samples_per_category, len(category_data))
+            
+            if sample_count == 0:
+                print(f"Warnung: Keine Proben für Kategorie '{category}' gefunden")
+                for j in range(samples_per_category):
+                    axes[i, j].text(0.5, 0.5, "Keine Beispiele vorhanden", 
+                                ha='center', va='center')
+                    axes[i, j].axis("off")
+                continue
+                
+            category_samples = category_data["path"].sample(sample_count).tolist()
+            
+            # Fülle die verbleibenden Plätze mit leeren Plots, wenn nicht genug Beispiele
+            for j in range(samples_per_category):
+                ax = axes[i, j]
+                if j < len(category_samples):
+                    try:
+                        img_path = category_samples[j]
+                        img = Image.open(img_path)
+                        img_res = img.resize((1920, 500))
+                        ax.imshow(img_res)
+                        
+                        # Setze Titel über dem Bild mit mehr Abstand
+                        ax.set_title(f"{category}", fontsize=10)
+                        
+                    except Exception as e:
+                        print(f"Fehler beim Laden des Bildes {img_path}: {e}")
+                        ax.text(0.5, 0.5, "Fehler beim Laden des Bildes", 
+                            ha='center', va='center')
+                else:
+                    # Leer lassen, wenn nicht genug Beispiele
+                    ax.set_visible(False)
+                
+                ax.axis("off")
+        
+        # Füge übergeordneten Titel hinzu
+        plt.suptitle("Zufällige Beispiele nach Kategorie", fontsize=16, y=0.98)
+        
         plt.show()
 
     def analyze_image_dimensions(self, figsize=(15, 10)):
@@ -181,7 +204,10 @@ class ImageEDA:
         )
 
     def analyze_colors_by_category(
-        self, samples_per_category=10, n_colors=5, figsize=(15, 10)
+        self,
+        samples_per_category=10,
+        n_colors=5,
+        figsize=(35, 20)
     ):
         """
         Analysiert die dominanten Farben für jede Kategorie.
@@ -191,25 +217,33 @@ class ImageEDA:
             n_colors (int): Anzahl der zu extrahierenden dominanten Farben
             figsize (tuple): Größe der Abbildung
         """
-        fig, axes = plt.subplots(len(self.categories), 2, figsize=figsize)
+        # Figure mit 'constrained_layout=True' für automatisches, sauberes Layout
+        fig, axes = plt.subplots(
+            nrows=len(self.categories),
+            ncols=2,
+            figsize=figsize,
+            constrained_layout=True
+        )
 
+        fig.set_constrained_layout_pads(
+            w_pad=1.0,  # Abstand zwischen Spalten (in "Figure-Einheiten")
+            h_pad=1.0,  # Abstand zwischen Zeilen (in "Figure-Einheiten")
+            wspace=0.5, # relativer Abstand zwischen Subplots in x-Richtung
+            hspace=0.5  # relativer Abstand zwischen Subplots in y-Richtung
+        )
+
+        # Bei nur einer Kategorie ist axes ein 1D-Array statt 2D
         if len(self.categories) == 1:
             axes = [axes]
 
         for i, category in enumerate(self.categories):
-            category_samples = (
-                self.image_data[self.image_data["category"] == category]["path"]
-                .sample(
-                    min(
-                        samples_per_category,
-                        len(self.image_data[self.image_data["category"] == category]),
-                    )
-                )
-                .tolist()
-            )
+            # Proben für diese Kategorie ziehen
+            category_data = self.image_data[self.image_data["category"] == category]
+            sample_count = min(samples_per_category, len(category_data))
+            category_samples = category_data["path"].sample(sample_count).tolist()
 
             if not category_samples:
-                continue
+                continue  # Keine Bilder vorhanden
 
             # Farbinformationen aus allen Beispielen kombinieren
             all_pixels = []
@@ -217,10 +251,11 @@ class ImageEDA:
                 img = cv2.imread(img_path)
                 if img is None:
                     continue
+                # In RGB konvertieren
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                img = cv2.resize(
-                    img, (100, 100)
-                )  # Verkleinern für schnellere Verarbeitung
+                # Bild verkleinern (schnellere K-Means-Berechnung)
+                img = cv2.resize(img, (100, 100))
+                # Pixel in eine lange Liste bringen
                 pixels = img.reshape(-1, 3)
                 all_pixels.append(pixels)
 
@@ -229,50 +264,46 @@ class ImageEDA:
 
             all_pixels = np.vstack(all_pixels)
 
-            # K-Means verwenden, um dominante Farben zu finden
+            # K-Means zum Finden der n_colors dominanten Farben
             kmeans = KMeans(n_clusters=n_colors, random_state=42, n_init=10)
             kmeans.fit(all_pixels)
             colors = kmeans.cluster_centers_.astype(int)
 
-            # Originalbeispiele anzeigen
-            img_collage = np.hstack(
-                [
-                    cv2.resize(
-                        cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB), (100, 100)
-                    )
-                    for p in category_samples[:5]
-                    if cv2.imread(p) is not None
-                ]
-            )
+            # Collage aus ein paar Beispielen (z.B. 5)
+            img_collage = np.hstack([
+                cv2.resize(
+                    cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB),
+                    (100, 100)
+                )
+                for p in category_samples[:5]
+                if cv2.imread(p) is not None
+            ])
+
+            # Farbpalette als horizontalen Streifen erstellen
+            color_palette = np.ones((100, n_colors * 100, 3), dtype=np.uint8)
+            for j, color in enumerate(colors):
+                color_palette[:, j * 100 : (j + 1) * 100] = color
 
             if len(self.categories) == 1:
+                # Nur eine Kategorie => axes[0], axes[1] statt axes[i, 0], axes[i, 1]
                 axes[0].imshow(img_collage)
-                axes[0].set_title(f"{category} Beispiele")
+                axes[0].set_title(f"{category} Beispiele", fontsize=12)
                 axes[0].axis("off")
 
-                # Farbpalette anzeigen
-                color_palette = np.ones((100, n_colors * 100, 3), dtype=np.uint8)
-                for j, color in enumerate(colors):
-                    color_palette[:, j * 100 : (j + 1) * 100] = color
-
                 axes[1].imshow(color_palette)
-                axes[1].set_title(f"{category} Dominante Farben")
+                axes[1].set_title(f"{category} Dominante Farben", fontsize=12)
                 axes[1].axis("off")
+
             else:
-                axes[i, 0].imshow(img_collage)
-                axes[i, 0].set_title(f"{category} Beispiele")
-                axes[i, 0].axis("off")
+                # Mehrere Kategorien => Zugriff über (i, 0) und (i, 1)
+                axes[i][0].imshow(img_collage)
+                axes[i][0].set_title(f"{category} Beispiele", fontsize=12)
+                axes[i][0].axis("off")
 
-                # Farbpalette anzeigen
-                color_palette = np.ones((100, n_colors * 100, 3), dtype=np.uint8)
-                for j, color in enumerate(colors):
-                    color_palette[:, j * 100 : (j + 1) * 100] = color
+                axes[i][1].imshow(color_palette)
+                axes[i][1].set_title(f"{category} Dominante Farben", fontsize=12)
+                axes[i][1].axis("off")
 
-                axes[i, 1].imshow(color_palette)
-                axes[i, 1].set_title(f"{category} Dominante Farben")
-                axes[i, 1].axis("off")
-
-        plt.tight_layout()
         plt.show()
 
     def show_augmentation_examples(self, category=None, index=0, figsize=(15, 10)):
