@@ -103,7 +103,7 @@ class ImageEDA:
         print(f"Gesamtzahl der Bilder: {len(self.image_data)}")
         print(f"Aufschlüsselung nach Kategorien:\n{counts}")
 
-    def show_random_samples(self, samples_per_category=1, figsize=(35, 20)):
+    def show_random_samples(self, samples_per_category=1, figsize=(12, 8)):
         """
         Zeigt zufällige Beispielbilder aus jeder Kategorie an.
 
@@ -207,7 +207,7 @@ class ImageEDA:
         self,
         samples_per_category=10,
         n_colors=5,
-        figsize=(35, 20)
+        figsize=(12, 8)
     ):
         """
         Analysiert die dominanten Farben für jede Kategorie.
