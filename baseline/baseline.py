@@ -32,10 +32,9 @@ def remove_corrupt_images(folder: Path):
             try:
                 with Image.open(img_path) as img:
                     img.verify()
-                    img.close()
-                    # zusätzliches vollständiges Laden zum Abfangen weiterer Fehler
-                    with Image.open(img_path) as img2:
-                        img2.load()
+                # zusätzliches vollständiges Laden zum Abfangen weiterer Fehler
+                with Image.open(img_path) as img2:
+                    img2.load()
             except Exception:
                 print(f"  ✗ Entferne defektes Bild {img_path}")
                 img_path.unlink()
@@ -87,14 +86,31 @@ def augment_image(image, label):
     image = tf.image.random_contrast(image, 0.8, 1.2)
     return image, label
 
-def make_dataset(paths, labels, batch_size, augment=False):
+def make_dataset(
+    paths: list[str],
+    labels: list[str],
+    batch_size: int,
+    *,
+    cls2idx: dict[str,int] | None = None,
+    augment: bool = False
+):
     """
     Baut aus (paths, labels) ein gepuffertes und (optional) augmentiertes Dataset.
+    Wenn cls2idx gegeben ist, wird es für One-Hot-Encoding wiederverwendet.
     """
-    classes = sorted(set(labels))
-    cls2idx = {c:i for i,c in enumerate(classes)}
+    # Falls kein Mapping vorhanden, selbst erstellen
+    if cls2idx is None:
+        classes = sorted(set(labels))
+        cls2idx = {c: i for i, c in enumerate(classes)}
+    else:
+        # Reihenfolge der Klassen konstant halten
+        classes = sorted(cls2idx.keys())
+
+    # Labels in Indizes umwandeln und one-hot kodieren
     y = [cls2idx[l] for l in labels]
     y = to_categorical(y, num_classes=len(classes))
+
+    # Dataset zusammenbauen
     ds = tf.data.Dataset.from_tensor_slices((paths, y))
     ds = ds.map(preprocess_image, num_parallel_calls=AUTOTUNE)
     if augment:
@@ -102,14 +118,38 @@ def make_dataset(paths, labels, batch_size, augment=False):
     ds = ds.batch(batch_size).prefetch(AUTOTUNE)
     return ds, cls2idx
 
-# Pfade & Labels einlesen und Datasets bauen
+# Pfade & Labels einlesen
 train_paths, train_labels = collect_paths_and_labels(TRAIN_DIR)
 val_paths,   val_labels   = collect_paths_and_labels(VAL_DIR)
 test_paths,  test_labels  = collect_paths_and_labels(TEST_DIR)
 
-train_ds, cls2idx = make_dataset(train_paths, train_labels, BATCH_SIZE, augment=True)
-val_ds,   _       = make_dataset(val_paths,   val_labels,   BATCH_SIZE)
-test_ds,  _       = make_dataset(test_paths,  test_labels,  BATCH_SIZE)
+# Einmal alle Klassen aus allen Splits sammeln, damit keine KeyError auftreten
+all_labels = train_labels + val_labels + test_labels
+classes = sorted(set(all_labels))
+cls2idx = {c: i for i, c in enumerate(classes)}
+
+# Trainings-Dataset + Mapping wiederverwenden
+train_ds, _ = make_dataset(
+    train_paths,
+    train_labels,
+    BATCH_SIZE,
+    cls2idx=cls2idx,
+    augment=True
+)
+
+# Validierungs- und Test-Datasets mit demselben Mapping
+val_ds, _  = make_dataset(
+    val_paths,
+    val_labels,
+    BATCH_SIZE,
+    cls2idx=cls2idx
+)
+test_ds, _ = make_dataset(
+    test_paths,
+    test_labels,
+    BATCH_SIZE,
+    cls2idx=cls2idx
+)
 
 # Transfer-Learning mit MobileNetV2
 base = MobileNetV2(input_shape=(IMG_SIZE,IMG_SIZE,3), include_top=False, weights='imagenet')
@@ -123,7 +163,7 @@ x = base(inp, training=False)
 x = layers.GlobalAveragePooling2D()(x)
 x = layers.Dense(128, activation='relu')(x)
 x = layers.Dropout(0.5)(x)
-out = layers.Dense(len(cls2idx), activation='softmax')(x)
+out = layers.Dense(len(classes), activation='softmax')(x)
 model = models.Model(inp, out)
 
 model.compile(
