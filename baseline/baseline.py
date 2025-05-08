@@ -13,9 +13,9 @@ from tensorflow.keras.utils import to_categorical
 import matplotlib.pyplot as plt
 
 # Basisverzeichnisse
-BASE_DIR  = Path('..') / 'data' / 'split_dataset'
+BASE_DIR  = Path('..') / 'data'
 TRAIN_DIR = BASE_DIR / 'train'
-VAL_DIR   = BASE_DIR / 'val'
+VAL_DIR   = BASE_DIR / 'valid'
 TEST_DIR  = BASE_DIR / 'test'
 
 IMG_SIZE   = 224

@@ -98,7 +98,7 @@ class ImageEDA:
         splits = ['train', 'valid', 'test']
         raw_counts = Counter()
 
-        # 1) Rohzählen pro Kategorie
+        # Rohzählen pro Kategorie
         for split in splits:
             split_dir = os.path.join(root_dir, split)
             if not os.path.isdir(split_dir):
@@ -113,7 +113,7 @@ class ImageEDA:
             print("Keine Kategorien oder Bilder gefunden!")
             return
 
-        # 2) Gruppieren
+        # Gruppieren
         def _group(cat: str) -> str:
             # reine Zahlen
             if re.fullmatch(r'\d+', cat):
@@ -129,7 +129,7 @@ class ImageEDA:
             grp = _group(cat)
             grouped[grp] += cnt
 
-        # 3) Plotten
+        # Plotten
         labels = list(grouped.keys())
         values = [grouped[l] for l in labels]
 
