@@ -1,0 +1,29 @@
+<annotation>
+	<folder></folder>
+	<filename>Z-7-_jpg.rf.6c0dd18fb88e27a8ef2a338d4c7363ea.jpg</filename>
+	<path>Z-7-_jpg.rf.6c0dd18fb88e27a8ef2a338d4c7363ea.jpg</path>
+	<source>
+		<database>roboflow.com</database>
+	</source>
+	<size>
+		<width>640</width>
+		<height>640</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>Abrador</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<occluded>0</occluded>
+		<bndbox>
+			<xmin>119</xmin>
+			<xmax>478</xmax>
+			<ymin>69</ymin>
+			<ymax>537</ymax>
+		</bndbox>
+	</object>
+	<metadata>
+	</metadata>
+</annotation>

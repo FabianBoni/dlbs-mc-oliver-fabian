@@ -1,0 +1,32 @@
+<annotation>
+	<folder></folder>
+	<filename>youtube-14_jpg.rf.69404320c6f9d9ca8ca20e973d3568c4.jpg</filename>
+	<path>youtube-14_jpg.rf.69404320c6f9d9ca8ca20e973d3568c4.jpg</path>
+	<source>
+		<database>roboflow.com</database>
+	</source>
+	<size>
+		<width>640</width>
+		<height>640</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>dog</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<occluded>0</occluded>
+		<bndbox>
+			<xmin>159</xmin>
+			<xmax>626</xmax>
+			<ymin>213</ymin>
+			<ymax>576</ymax>
+		</bndbox>
+	</object>
+	<metadata>
+		<tags>
+			<tag>1</tag>
+		</tags>
+	</metadata>
+</annotation>

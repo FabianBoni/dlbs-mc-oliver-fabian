@@ -1,0 +1,29 @@
+<annotation>
+	<folder></folder>
+	<filename>9k-10-_jpg.rf.fdfd7de327d38b5adaca11762c93dbba.jpg</filename>
+	<path>9k-10-_jpg.rf.fdfd7de327d38b5adaca11762c93dbba.jpg</path>
+	<source>
+		<database>roboflow.com</database>
+	</source>
+	<size>
+		<width>640</width>
+		<height>640</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>Abrador</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<occluded>0</occluded>
+		<bndbox>
+			<xmin>95</xmin>
+			<xmax>613</xmax>
+			<ymin>54</ymin>
+			<ymax>606</ymax>
+		</bndbox>
+	</object>
+	<metadata>
+	</metadata>
+</annotation>

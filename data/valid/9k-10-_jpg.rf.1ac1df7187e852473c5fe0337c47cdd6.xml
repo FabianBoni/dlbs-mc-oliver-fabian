@@ -1,0 +1,29 @@
+<annotation>
+	<folder></folder>
+	<filename>9k-10-_jpg.rf.1ac1df7187e852473c5fe0337c47cdd6.jpg</filename>
+	<path>9k-10-_jpg.rf.1ac1df7187e852473c5fe0337c47cdd6.jpg</path>
+	<source>
+		<database>roboflow.com</database>
+	</source>
+	<size>
+		<width>640</width>
+		<height>640</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>Chihuahua</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<occluded>0</occluded>
+		<bndbox>
+			<xmin>295</xmin>
+			<xmax>590</xmax>
+			<ymin>79</ymin>
+			<ymax>614</ymax>
+		</bndbox>
+	</object>
+	<metadata>
+	</metadata>
+</annotation>

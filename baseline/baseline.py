@@ -32,7 +32,6 @@ def remove_corrupt_images(folder: Path):
             try:
                 with Image.open(img_path) as img:
                     img.verify()
-                # zusätzliches vollständiges Laden zum Abfangen weiterer Fehler
                 with Image.open(img_path) as img2:
                     img2.load()
             except Exception:
@@ -74,7 +73,7 @@ def preprocess_image(path, label):
         IMG_SIZE,
         IMG_SIZE
     )
-    img = img/255.0
+    img = img / 255.0
     return img, label
 
 def augment_image(image, label):
@@ -98,19 +97,15 @@ def make_dataset(
     Baut aus (paths, labels) ein gepuffertes und (optional) augmentiertes Dataset.
     Wenn cls2idx gegeben ist, wird es für One-Hot-Encoding wiederverwendet.
     """
-    # Falls kein Mapping vorhanden, selbst erstellen
     if cls2idx is None:
         classes = sorted(set(labels))
         cls2idx = {c: i for i, c in enumerate(classes)}
     else:
-        # Reihenfolge der Klassen konstant halten
         classes = sorted(cls2idx.keys())
 
-    # Labels in Indizes umwandeln und one-hot kodieren
     y = [cls2idx[l] for l in labels]
     y = to_categorical(y, num_classes=len(classes))
 
-    # Dataset zusammenbauen
     ds = tf.data.Dataset.from_tensor_slices((paths, y))
     ds = ds.map(preprocess_image, num_parallel_calls=AUTOTUNE)
     if augment:
@@ -123,38 +118,32 @@ train_paths, train_labels = collect_paths_and_labels(TRAIN_DIR)
 val_paths,   val_labels   = collect_paths_and_labels(VAL_DIR)
 test_paths,  test_labels  = collect_paths_and_labels(TEST_DIR)
 
-# Einmal alle Klassen aus allen Splits sammeln, damit keine KeyError auftreten
+# Einheitliches Mapping aller Klassen aus allen Splits, um KeyErrors zu vermeiden
 all_labels = train_labels + val_labels + test_labels
 classes = sorted(set(all_labels))
 cls2idx = {c: i for i, c in enumerate(classes)}
 
-# Trainings-Dataset + Mapping wiederverwenden
+# Datensätze erstellen, dabei das eine cls2idx wiederverwenden
 train_ds, _ = make_dataset(
-    train_paths,
-    train_labels,
-    BATCH_SIZE,
-    cls2idx=cls2idx,
-    augment=True
+    train_paths, train_labels,
+    BATCH_SIZE, cls2idx=cls2idx, augment=True
 )
-
-# Validierungs- und Test-Datasets mit demselben Mapping
-val_ds, _  = make_dataset(
-    val_paths,
-    val_labels,
-    BATCH_SIZE,
-    cls2idx=cls2idx
+val_ds, _   = make_dataset(
+    val_paths,   val_labels,
+    BATCH_SIZE, cls2idx=cls2idx
 )
-test_ds, _ = make_dataset(
-    test_paths,
-    test_labels,
-    BATCH_SIZE,
-    cls2idx=cls2idx
+test_ds, _  = make_dataset(
+    test_paths,  test_labels,
+    BATCH_SIZE, cls2idx=cls2idx
 )
 
 # Transfer-Learning mit MobileNetV2
-base = MobileNetV2(input_shape=(IMG_SIZE,IMG_SIZE,3), include_top=False, weights='imagenet')
+base = MobileNetV2(
+    input_shape=(IMG_SIZE,IMG_SIZE,3),
+    include_top=False,
+    weights='imagenet'
+)
 base.trainable = True
-# nur letzte 20 Layer werden feintrainiert
 for layer in base.layers[:-20]:
     layer.trainable = False
 
@@ -172,13 +161,26 @@ model.compile(
     metrics=['accuracy']
 )
 
-# Training mit Callbacks
+# Callbacks: EarlyStopping mit höherer Geduld + Speichern im .keras-Format
 cbs = [
-    callbacks.EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True),
-    callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=2),
-    callbacks.ModelCheckpoint('best_model.h5', save_best_only=True, monitor='val_loss')
+    callbacks.EarlyStopping(
+        monitor='val_loss',
+        patience=5,
+        restore_best_weights=True
+    ),
+    callbacks.ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.2,
+        patience=2
+    ),
+    callbacks.ModelCheckpoint(
+        'best_model.keras',
+        save_best_only=True,
+        monitor='val_loss'
+    )
 ]
 
+# Training
 history = model.fit(
     train_ds,
     validation_data=val_ds,
@@ -205,9 +207,15 @@ plt.show()
 test_loss, test_acc = model.evaluate(test_ds)
 print(f"Test Accuracy: {test_acc:.4f}, Test Loss: {test_loss:.4f}")
 
-# Einige Beispiel-Vorhersagen
+# Beispiele mit wahrem vs. vorhergesagtem Label
 idx2cls = {v:k for k,v in cls2idx.items()}
-for imgs, _ in test_ds.take(1):
+for imgs, y_true in test_ds.take(1):
     preds = model.predict(imgs)
-    for i,p in enumerate(np.argmax(preds,axis=1)[:5]):
-        print(f"Beispiel {i+1}: {idx2cls[p]}")
+    for i in range(5):
+        pred_idx = np.argmax(preds[i])
+        true_idx = np.argmax(y_true[i])
+        print(
+            f"Beispiel {i+1}: "
+            f"wahr = {idx2cls[true_idx]}, "
+            f"pred = {idx2cls[pred_idx]}"
+        )

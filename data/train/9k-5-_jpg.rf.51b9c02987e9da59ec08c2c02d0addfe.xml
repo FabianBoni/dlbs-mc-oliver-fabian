@@ -1,0 +1,29 @@
+<annotation>
+	<folder></folder>
+	<filename>9k-5-_jpg.rf.51b9c02987e9da59ec08c2c02d0addfe.jpg</filename>
+	<path>9k-5-_jpg.rf.51b9c02987e9da59ec08c2c02d0addfe.jpg</path>
+	<source>
+		<database>roboflow.com</database>
+	</source>
+	<size>
+		<width>640</width>
+		<height>640</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>Shiba-Inu</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<occluded>0</occluded>
+		<bndbox>
+			<xmin>238</xmin>
+			<xmax>560</xmax>
+			<ymin>101</ymin>
+			<ymax>557</ymax>
+		</bndbox>
+	</object>
+	<metadata>
+	</metadata>
+</annotation>

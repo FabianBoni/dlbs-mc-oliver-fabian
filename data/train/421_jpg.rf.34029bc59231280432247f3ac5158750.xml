@@ -1,0 +1,29 @@
+<annotation>
+	<folder></folder>
+	<filename>421_jpg.rf.34029bc59231280432247f3ac5158750.jpg</filename>
+	<path>421_jpg.rf.34029bc59231280432247f3ac5158750.jpg</path>
+	<source>
+		<database>roboflow.com</database>
+	</source>
+	<size>
+		<width>640</width>
+		<height>640</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>dog</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<occluded>0</occluded>
+		<bndbox>
+			<xmin>66</xmin>
+			<xmax>147</xmax>
+			<ymin>404</ymin>
+			<ymax>519</ymax>
+		</bndbox>
+	</object>
+	<metadata>
+	</metadata>
+</annotation>
