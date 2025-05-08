@@ -1,3 +1,4 @@
+import glob
 import os
 import random
 import numpy as np
@@ -5,11 +6,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from PIL import Image
 import pandas as pd
-from collections import Counter
+from collections import Counter, defaultdict
 from matplotlib.colors import rgb2hex
 from sklearn.cluster import KMeans
 import cv2
 from pathlib import Path
+import re
 
 
 class ImageEDA:
@@ -82,26 +84,71 @@ class ImageEDA:
 
         return pd.DataFrame(data)
 
-    def show_class_distribution(self, figsize=(10, 6)):
+    def show_class_distribution_from_dirs(
+        self,
+        root_dir: str,
+        figsize=(10, 6)
+    ):
         """
-        Zeigt die Verteilung der Bilder über Kategorien hinweg an.
+        Zeigt die Verteilung der Bilder über grob gruppierte 'Klassen' an:
+        - reine Zahlen werden zu 'numeric'
+        - alle anderen Kategorien werden nach ihrem Präfix vor dem ersten '-'
+            gruppiert (z.B. '2Q-1-' → '2Q', 'youtube-17' → 'youtube', 'Cats' bleibt 'Cats').
         """
-        if 'category' not in self.image_data.columns or self.image_data.empty:
-            print("Keine Kategorien gefunden oder Datensatz ist leer!")
+        splits = ['train', 'valid', 'test']
+        raw_counts = Counter()
+
+        # 1) Rohzählen pro Kategorie
+        for split in splits:
+            split_dir = os.path.join(root_dir, split)
+            if not os.path.isdir(split_dir):
+                continue
+            pattern = os.path.join(split_dir, '*.*')
+            for fp in glob.glob(pattern):
+                fn = os.path.basename(fp)
+                cat = fn.split('_', 1)[0] if '_' in fn else os.path.splitext(fn)[0]
+                raw_counts[cat] += 1
+
+        if not raw_counts:
+            print("Keine Kategorien oder Bilder gefunden!")
             return
+
+        # 2) Gruppieren
+        def _group(cat: str) -> str:
+            # reine Zahlen
+            if re.fullmatch(r'\d+', cat):
+                return 'numeric'
+            # 'irgendwas-' → 'irgendwas'
+            if '-' in cat:
+                return cat.split('-', 1)[0]
+            # alles andere unverändert
+            return cat
+
+        grouped = defaultdict(int)
+        for cat, cnt in raw_counts.items():
+            grp = _group(cat)
+            grouped[grp] += cnt
+
+        # 3) Plotten
+        labels = list(grouped.keys())
+        values = [grouped[l] for l in labels]
+
         plt.figure(figsize=figsize)
-        counts = self.image_data["category"].value_counts()
-        sns.barplot(x=counts.index, y=counts.values)
-        plt.title("Verteilung der Bilder über Kategorien")
-        plt.xlabel("Kategorie")
-        plt.ylabel("Anzahl der Bilder")
-        plt.xticks(rotation=45)
+        sns.barplot(x=labels, y=values, palette="viridis")
+        plt.title("Verteilung der Bilder nach Format­gruppen")
+        plt.xlabel("Gruppe")
+        plt.ylabel("Anzahl Bilder")
+        plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
         plt.show()
 
-        print(f"Gesamtzahl der Kategorien: {len(counts)}")
-        print(f"Gesamtzahl der Bilder: {len(self.image_data)}")
-        print(f"Aufschlüsselung nach Kategorien:\n{counts}")
+        # 4) Konsole
+        total_images = sum(values)
+        print(f"Gesamtzahl der Gruppen: {len(grouped)}")
+        print(f"Gesamtzahl der Bilder: {total_images}")
+        print("Aufschlüsselung nach Gruppen:")
+        for grp, cnt in sorted(grouped.items(), key=lambda x: -x[1]):
+            print(f"  {grp}: {cnt}")
 
     def show_random_samples(self, samples_per_category=1, figsize=(12, 8)):
         """
@@ -203,107 +250,73 @@ class ImageEDA:
             self.image_data[["width", "height", "aspect_ratio", "file_size"]].describe()
         )
 
-    def analyze_colors_by_category(
+    def analyze_colors(
         self,
-        samples_per_category=10,
-        n_colors=5,
-        figsize=(12, 8)
+        sample_size: int = 10,
+        n_colors: int = 5,
+        figsize=(12, 6)
     ):
         """
-        Analysiert die dominanten Farben für jede Kategorie.
+        Analysiert die dominanten Farben über alle Bilder im Datensatz.
 
         Args:
-            samples_per_category (int): Anzahl der Beispiele pro Kategorie
+            sample_size (int): Anzahl der zufällig ausgewählten Bilder
             n_colors (int): Anzahl der zu extrahierenden dominanten Farben
-            figsize (tuple): Größe der Abbildung
+            figsize (tuple): Größe der Figure
         """
-        # Figure mit 'constrained_layout=True' für automatisches, sauberes Layout
-        fig, axes = plt.subplots(
-            nrows=len(self.categories),
-            ncols=2,
-            figsize=figsize,
-            constrained_layout=True
-        )
+        if self.image_data.empty:
+            print("Keine Bilder zum Analysieren vorhanden!")
+            return
 
-        fig.set_constrained_layout_pads(
-            w_pad=1.0,  # Abstand zwischen Spalten (in "Figure-Einheiten")
-            h_pad=1.0,  # Abstand zwischen Zeilen (in "Figure-Einheiten")
-            wspace=0.5, # relativer Abstand zwischen Subplots in x-Richtung
-            hspace=0.5  # relativer Abstand zwischen Subplots in y-Richtung
-        )
+        # Zufällige Teilmenge der Pfade
+        paths = self.image_data["path"].sample(
+            min(sample_size, len(self.image_data))
+        ).tolist()
 
-        # Bei nur einer Kategorie ist axes ein 1D-Array statt 2D
-        if len(self.categories) == 1:
-            axes = [axes]
-
-        for i, category in enumerate(self.categories):
-            # Proben für diese Kategorie ziehen
-            category_data = self.image_data[self.image_data["category"] == category]
-            sample_count = min(samples_per_category, len(category_data))
-            category_samples = category_data["path"].sample(sample_count).tolist()
-
-            if not category_samples:
-                continue  # Keine Bilder vorhanden
-
-            # Farbinformationen aus allen Beispielen kombinieren
-            all_pixels = []
-            for img_path in category_samples:
-                img = cv2.imread(img_path)
-                if img is None:
-                    continue
-                # In RGB konvertieren
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                # Bild verkleinern (schnellere K-Means-Berechnung)
-                img = cv2.resize(img, (100, 100))
-                # Pixel in eine lange Liste bringen
-                pixels = img.reshape(-1, 3)
-                all_pixels.append(pixels)
-
-            if not all_pixels:
+        # Pixel sammeln
+        all_pixels = []
+        for p in paths:
+            img = cv2.imread(p)
+            if img is None:
                 continue
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = cv2.resize(img, (100, 100))
+            all_pixels.append(img.reshape(-1, 3))
+        if not all_pixels:
+            print("Keine Pixel zum Clustern gefunden!")
+            return
+        all_pixels = np.vstack(all_pixels)
 
-            all_pixels = np.vstack(all_pixels)
+        # KMeans
+        kmeans = KMeans(n_clusters=n_colors, random_state=42, n_init=10)
+        kmeans.fit(all_pixels)
+        colors = kmeans.cluster_centers_.astype(int)
 
-            # K-Means zum Finden der n_colors dominanten Farben
-            kmeans = KMeans(n_clusters=n_colors, random_state=42, n_init=10)
-            kmeans.fit(all_pixels)
-            colors = kmeans.cluster_centers_.astype(int)
+        # Collage aus Beispielen
+        collage = np.hstack([
+            cv2.resize(
+                cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB),
+                (100, 100)
+            )
+            for p in paths[:5] if cv2.imread(p) is not None
+        ])
 
-            # Collage aus ein paar Beispielen (z.B. 5)
-            img_collage = np.hstack([
-                cv2.resize(
-                    cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB),
-                    (100, 100)
-                )
-                for p in category_samples[:5]
-                if cv2.imread(p) is not None
-            ])
+        # Farbpalette
+        palette = np.zeros((50, n_colors * 50, 3), dtype=np.uint8)
+        for i, c in enumerate(colors):
+            palette[:, i*50:(i+1)*50] = c
 
-            # Farbpalette als horizontalen Streifen erstellen
-            color_palette = np.ones((100, n_colors * 100, 3), dtype=np.uint8)
-            for j, color in enumerate(colors):
-                color_palette[:, j * 100 : (j + 1) * 100] = color
+        # Plot
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+        ax1.imshow(collage)
+        ax1.set_title("Beispielbilder", fontsize=12)
+        ax1.axis("off")
 
-            if len(self.categories) == 1:
-                # Nur eine Kategorie => axes[0], axes[1] statt axes[i, 0], axes[i, 1]
-                axes[0].imshow(img_collage)
-                axes[0].set_title(f"{category} Beispiele", fontsize=12)
-                axes[0].axis("off")
+        ax2.imshow(palette)
+        ax2.set_title("Dominante Farben", fontsize=12)
+        ax2.axis("off")
 
-                axes[1].imshow(color_palette)
-                axes[1].set_title(f"{category} Dominante Farben", fontsize=12)
-                axes[1].axis("off")
-
-            else:
-                # Mehrere Kategorien => Zugriff über (i, 0) und (i, 1)
-                axes[i][0].imshow(img_collage)
-                axes[i][0].set_title(f"{category} Beispiele", fontsize=12)
-                axes[i][0].axis("off")
-
-                axes[i][1].imshow(color_palette)
-                axes[i][1].set_title(f"{category} Dominante Farben", fontsize=12)
-                axes[i][1].axis("off")
-
+        plt.tight_layout()
         plt.show()
 
     def show_augmentation_examples(self, category=None, index=0, figsize=(15, 10)):
