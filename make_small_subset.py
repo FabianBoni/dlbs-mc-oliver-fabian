@@ -10,7 +10,7 @@ def create_subset(src_root='data', dst_root='data_small',
         dst_dir = os.path.join(dst_root, split)
         os.makedirs(dst_dir, exist_ok=True)
 
-        # alle Bilder (.jpg/.png) einsammeln
+
         imgs = glob.glob(f"{src_dir}/*.jpg") + glob.glob(f"{src_dir}/*.png")
         if len(imgs) < n:
             print(f"Nur {len(imgs)} Bilder in {split}, nutze alle.")
@@ -18,7 +18,6 @@ def create_subset(src_root='data', dst_root='data_small',
         else:
             sample = random.sample(imgs, n)
 
-        # kopiere Bild + dazugehöriges .txt
         for img in sample:
             base = os.path.basename(img)
             name, _ = os.path.splitext(base)
@@ -33,7 +32,7 @@ if __name__ == "__main__":
     create_subset(
       src_root='data',
       dst_root='data_small',
-      n_train=100,   # Anzahl Trainingsbilder
-      n_val=50       # Anzahl Validierungsbilder
+      n_train=100,  
+      n_val=50       
     )
     print("Subset angelegt in data_small/")
