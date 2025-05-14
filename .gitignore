@@ -1,3 +1,5 @@
 .venv
 baseline/best_model.h5
 baseline/best_model.keras
+data
+data_small
