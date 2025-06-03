@@ -1,5 +1,6 @@
+<?xml version='1.0' encoding='utf-8'?>
 <annotation>
-	<folder></folder>
+	<folder />
 	<filename>9k-5-_jpg.rf.9af9375b4c90827fe38f305e75df1c5d.jpg</filename>
 	<path>9k-5-_jpg.rf.9af9375b4c90827fe38f305e75df1c5d.jpg</path>
 	<source>
@@ -12,7 +13,7 @@
 	</size>
 	<segmented>0</segmented>
 	<object>
-		<name>Chihuahua</name>
+		<name>dog</name>
 		<pose>Unspecified</pose>
 		<truncated>0</truncated>
 		<difficult>0</difficult>

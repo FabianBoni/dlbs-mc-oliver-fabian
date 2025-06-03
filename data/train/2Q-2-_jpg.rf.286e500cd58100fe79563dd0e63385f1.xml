@@ -1,5 +1,6 @@
+<?xml version='1.0' encoding='utf-8'?>
 <annotation>
-	<folder></folder>
+	<folder />
 	<filename>2Q-2-_jpg.rf.286e500cd58100fe79563dd0e63385f1.jpg</filename>
 	<path>2Q-2-_jpg.rf.286e500cd58100fe79563dd0e63385f1.jpg</path>
 	<source>
@@ -12,7 +13,7 @@
 	</size>
 	<segmented>0</segmented>
 	<object>
-		<name>Shiba-Inu</name>
+		<name>dog</name>
 		<pose>Unspecified</pose>
 		<truncated>0</truncated>
 		<difficult>0</difficult>

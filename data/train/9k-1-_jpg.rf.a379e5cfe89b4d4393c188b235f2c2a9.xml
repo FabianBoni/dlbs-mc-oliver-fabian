@@ -1,5 +1,6 @@
+<?xml version='1.0' encoding='utf-8'?>
 <annotation>
-	<folder></folder>
+	<folder />
 	<filename>9k-1-_jpg.rf.a379e5cfe89b4d4393c188b235f2c2a9.jpg</filename>
 	<path>9k-1-_jpg.rf.a379e5cfe89b4d4393c188b235f2c2a9.jpg</path>
 	<source>
@@ -12,7 +13,7 @@
 	</size>
 	<segmented>0</segmented>
 	<object>
-		<name>Shiba-Inu</name>
+		<name>dog</name>
 		<pose>Unspecified</pose>
 		<truncated>0</truncated>
 		<difficult>0</difficult>
@@ -25,7 +26,7 @@
 		</bndbox>
 	</object>
 	<object>
-		<name>Shiba-Inu</name>
+		<name>dog</name>
 		<pose>Unspecified</pose>
 		<truncated>0</truncated>
 		<difficult>0</difficult>
@@ -38,7 +39,7 @@
 		</bndbox>
 	</object>
 	<object>
-		<name>Shiba-Inu</name>
+		<name>dog</name>
 		<pose>Unspecified</pose>
 		<truncated>0</truncated>
 		<difficult>0</difficult>
@@ -51,7 +52,7 @@
 		</bndbox>
 	</object>
 	<object>
-		<name>Shiba-Inu</name>
+		<name>dog</name>
 		<pose>Unspecified</pose>
 		<truncated>0</truncated>
 		<difficult>0</difficult>
