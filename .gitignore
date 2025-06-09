@@ -3,3 +3,8 @@ baseline/best_model.h5
 baseline/best_model.keras
 data
 data_small
+ASDF.v1i.yolov8
+DOG.v1i.yolov8
+Dogs.v5i.yolov8
+kaggle
+kaggle_yolo
