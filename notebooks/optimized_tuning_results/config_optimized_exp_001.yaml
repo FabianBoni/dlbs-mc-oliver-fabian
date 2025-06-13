@@ -1,0 +1,27 @@
+names:
+- dog
+nc: 1
+path: c:\Users\fabud\OneDrive\Desktop\dlbs-mc-oliver-fabian\data_small
+train: train_augmented/images
+val: valid/images
+optimizer: SGD
+dropout: 0.1
+weight_decay: 0.0
+momentum: 0.937
+lr0: 0.005109091915628389
+lrf: 0.09227567665995559
+batch: 16
+hsv_h: 0.030918449833766584
+hsv_s: 0.15030380481746433
+hsv_v: 0.36389850238729604
+degrees: 19.655709520753064
+translate: 0.08102172359965897
+scale: 0.5510829752197913
+shear: 1.5507378465966632
+fliplr: 0.5919326993040515
+flipud: 0.08988382879679935
+mosaic: 0.8419919659577206
+mixup: 0.09442854309054267
+experiment_id: 1
+experiment_timestamp: '20250613_214834'
+base_architecture: SGD_Dropout0.1_WD0.0_YOLOv8s
