@@ -10,7 +10,7 @@ imgsz: 512
 save: true
 save_period: -1
 cache: false
-device: cpu
+device: null
 workers: 2
 project: null
 name: regularise_fabian_adam_yolov8s_seed42_wd0.000_dropout0.0
@@ -102,4 +102,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: botsort.yaml
-save_dir: c:\Users\fabud\Documents\GitHub\dlbs-mc-oliver-fabian\runs\detect\regularise_fabian_adam_yolov8s_seed42_wd0.000_dropout0.0
+save_dir: c:\Users\fabud\OneDrive\Desktop\dlbs-mc-oliver-fabian\runs\detect\regularise_fabian_adam_yolov8s_seed42_wd0.000_dropout0.0

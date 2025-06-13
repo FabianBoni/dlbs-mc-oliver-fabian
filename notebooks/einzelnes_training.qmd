@@ -1,0 +1,1182 @@
+---
+title: Einleitung
+jupyter: python3
+---
+
+
+In diesem Notebook führen wir eine umfassende Workflow-Pipeline zur Objekterkennung von Hunden mit YOLOv8 durch. Ausgangspunkt sind vier öffentlich verfügbare Datensätze (Kaggle Dog & Cat, Dogs OVDDC, ASDF-T4TSD und Max EVO5Q Dog), die unterschiedliche Bildquellen und -bedingungen abdecken. Zunächst importieren wir alle nötigen Bibliotheken für Datei- und Bildmanipulation, Datenaufbereitung, Modelltraining und -evaluation. Anschliessend vereinheitlichen und bereinigen wir die vier Datensätze:
+
+1. Extraktion und Mapping der Klassen (Katze vs. Hund)
+2. Konvertierung des Kaggle-Formats in YOLO-kompatible Ordnerstruktur und TXT-Labels
+3. Filterung aller Nicht-Hunde-Beispiele
+4. Standardisierung aller data.yaml-Konfigurationen auf eine einzige Klasse („dog“)
+5. Neuer In-Place-Split (70 % Training / 15 % Validierung / 15 % Test)
+
+Auf dieser Grundlage trainieren wir für jeden Datensatz ein eigenes YOLOv8n-Modell mit identischen Hyperparametern. Die Trainingsverläufe werden anschliessend anhand von Precision, Recall und mAP@0.5 visualisiert und miteinander verglichen. Für die beiden kleineren und anfänglich schwächeren Datensätze (asdf_v1i, dog_v1i) führen wir zusätzlich eine Datenaugmentation & Upsampling durch, um die Trainingsbasis um den Faktor vier zu erweitern und damit die Modellleistung deutlich zu steigern. Abschliessend analysieren wir Fehlklassifikationen (False Positives/Negatives), um spezifische Schwachstellen zu identifizieren und Optimierungsmöglichkeiten aufzuzeigen.
+
+
+# Setup und Imports
+
+In diesem Abschnitt werden alle notwendigen Bibliotheken und Module importiert, die wir im weiteren Verlauf des Notebooks benötigen.
+
+```{python}
+import os
+import glob
+import shutil
+import random
+import xml.etree.ElementTree as ET
+from pathlib import Path
+import cv2
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from ultralytics import YOLO
+from sklearn.model_selection import train_test_split
+import yaml
+import albumentations as A
+```
+
+# Vereinheitlichung und Bereinigung der Datensätze
+
+In diesem Abschnitt werden verschiedene Datensätze zur Hundeerkennung vorbereitet und vereinheitlicht, sodass sie später in einem YOLOv8-Modell vergleichbar trainiert und evaluiert werden können. Ziel ist es, alle Bilder und Annotationen auf das gleiche Format und dieselbe Klassendefinition zu bringen. Nachfolgend wird erklärt, was in jedem Codeblock passiert und was man im jeweiligen Output sieht.
+
+```{python}
+def extract_classes(kaggle_dir: Path):
+    """
+    Liest alle XML-Dateien unter kaggle_dir/annotations
+    und gibt eine sortierte Liste aller eindeutigen Klassen zurück.
+    """
+    xml_paths = list((kaggle_dir/"annotations").glob("*.xml"))
+    classes = set()
+    for p in xml_paths:
+        root = ET.parse(p).getroot()
+        for obj in root.findall("object"):
+            name = obj.find("name").text.strip()
+            classes.add(name)
+    return sorted(classes)
+
+kaggle_dir = Path("../kaggle")
+kaggle_yolo_dir = Path("../kaggle_yolo")
+class_list = extract_classes(kaggle_dir)
+print("Gefundene Klassen:", class_list)
+```
+
+Alle XML-Dateien im Annotationsordner werden durchlaufen, und die darin enthaltenen Objektklassen extrahiert. Die Klassenliste wird sortiert zurückgegeben.
+
+Es gibt zwei Klassen im Kaggle Datensatz: Katze und Hund.
+
+```{python}
+# mapping
+label2id = {name: idx for idx, name in enumerate(class_list)}
+print("Mapping:", label2id)
+```
+
+Jede Klasse wird einer numerischen ID zugewiesen – nötig für YOLO-Annotationen.
+
+Die Klasse „cat“ bekommt ID 0, „dog“ ID 1.
+
+```{python}
+# yaml datei erstellen
+cfg = {
+    'path': str(kaggle_yolo_dir.resolve()),
+    'train': 'train/images',
+    'valid':   'valid/images',
+    'test':  'test/images',
+    'nc':    len(class_list),
+    'names': class_list
+}
+
+with open(kaggle_yolo_dir/"data.yaml", "w") as f:
+    yaml.dump(cfg, f, default_flow_style=False)
+
+print("✅ data.yaml geschrieben:", (kaggle_yolo_dir/"data.yaml"))
+```
+
+Die Kaggle data.yaml-Datei für das YOLOv8-Training wird erstellt – sie enthält Pfade zu den Bildordnern und Klassennamen. YOLOv8 kann nun diesen Datensatz erkennen und nutzen.
+
+```{python}
+def convert_kaggle_to_yolo(kaggle_dir: Path,
+                           out_dir: Path,
+                           label2id: dict,
+                           split_ratios=(0.8,0.1,0.1),
+                           seed=42):
+    """
+    - Liest alle XMLs unter kaggle_dir/annotations und images unter kaggle_dir/images
+    - Splittet nach split_ratios in train/val/test
+    - Schreibt Bilder nach out_dir/{train,val,test}/images
+    - Schreibt TXT mit Klassen-IDs nach out_dir/{train,valid,test}/labels
+    """
+    random.seed(seed)
+    img_paths = list((kaggle_dir/"images").glob("*.[jp][pn]g"))
+    bases = [p.stem for p in img_paths]
+
+    # Splitting
+    train_b, test_b = train_test_split(bases, test_size=split_ratios[2], random_state=seed)
+    train_b, val_b  = train_test_split(train_b,
+                        test_size=split_ratios[1]/(split_ratios[0]+split_ratios[1]),
+                        random_state=seed)
+
+    for split_name, names in [("train", train_b), ("valid", val_b), ("test", test_b)]:
+        img_out = out_dir/split_name/"images"
+        lbl_out = out_dir/split_name/"labels"
+        img_out.mkdir(parents=True, exist_ok=True)
+        lbl_out.mkdir(parents=True, exist_ok=True)
+
+        for stem in names:
+            # Bild kopieren
+            src_img = None
+            for ext in [".jpg",".png"]:
+                cand = kaggle_dir/"images"/(stem+ext)
+                if cand.exists():
+                    src_img = cand
+                    break
+            if not src_img:
+                continue
+            shutil.copy(src_img, img_out)
+
+            # XML einlesen
+            xml_f = kaggle_dir/"annotations"/f"{stem}.xml"
+            if not xml_f.exists():
+                continue
+            tree = ET.parse(xml_f); root = tree.getroot()
+            w = int(root.find("size/width").text)
+            h = int(root.find("size/height").text)
+
+            # YOLO-BB-Zeilen erzeugen
+            lines = []
+            for obj in root.findall("object"):
+                cls = obj.find("name").text.strip()
+                if cls not in label2id:
+                    continue
+                cid = label2id[cls]
+                bb = obj.find("bndbox")
+                xmin, ymin = int(bb.find("xmin").text), int(bb.find("ymin").text)
+                xmax, ymax = int(bb.find("xmax").text), int(bb.find("ymax").text)
+                x_c = ((xmin + xmax)/2) / w
+                y_c = ((ymin + ymax)/2) / h
+                bw  = (xmax - xmin) / w
+                bh  = (ymax - ymin) / h
+                lines.append(f"{cid} {x_c:.6f} {y_c:.6f} {bw:.6f} {bh:.6f}")
+
+            # TXT speichern
+            with open(lbl_out/f"{stem}.txt", "w") as f:
+                f.write("\n".join(lines))
+
+    print("✅ Kaggle-Konvertierung abgeschlossen.")
+```
+
+```{python}
+out_dir = Path("../kaggle_yolo")
+convert_kaggle_to_yolo(kaggle_dir, out_dir, label2id)
+```
+
+Die Bilder und XML-Annotierungen werden in die YOLO-Struktur konvertiert:
+- Splits: train, valid, test
+- Bounding Boxes im .txt-Format
+- Bilder werden entsprechend kopiert
+
+Der Datensatz ist nun im YOLO-kompatiblen Format.
+
+```{python}
+# Pfad zur data.yaml
+cfg_path = Path("../DOG.v1i.yolov8/data.yaml")
+
+# Laden und anpassen
+with open(cfg_path, 'r') as f:
+    cfg = yaml.safe_load(f)
+
+cfg['nc'] = 1
+cfg['names'] = ['dog']
+
+# Zurückschreiben
+with open(cfg_path, 'w') as f:
+    yaml.dump(cfg, f, default_flow_style=False)
+
+print(f"✅ Updated {cfg_path}: nc={cfg['nc']}, names={cfg['names']}")
+```
+
+In allen data.yaml Dateien wird festgelegt, dass nur „dog“ die Zielklasse ist – für ein Binary-Klassifikationsszenario. YOLO trainiert ab jetzt ausschliesslich auf Hunde.
+
+```{python}
+base = Path("../DOG.v1i.yolov8")
+SPLITS = ["train", "valid", "test"]
+```
+
+Alle Label-Dateien werden so angepasst, dass alle Bounding Boxes die Klasse 0 (also Hund) bekommen, unabhängig von ihrer ursprünglichen ID.
+
+```{python}
+for split in SPLITS:
+    lbl_dir = base/split/"labels"
+    if not lbl_dir.exists():
+        continue
+
+    for txt_file in lbl_dir.glob("*.txt"):
+        lines = txt_file.read_text().splitlines()
+        new_lines = []
+        for L in lines:
+            parts = L.strip().split()
+            if len(parts) >= 5:
+                # setze die Klassennummer immer auf 0
+                parts[0] = '0'
+                new_lines.append(' '.join(parts))
+        # zurückschreiben (mit Zeilenumbruch am Ende)
+        txt_file.write_text("\n".join(new_lines) + "\n")
+        print(f"  ✔ {split}/labels/{txt_file.name} angepasst")
+```
+
+Die Labels sind nun einheitlich auf Hund (ID 0) gesetzt.
+
+```{python}
+DATASETS = [
+    Path("../DOG.v1i.yolov8"),
+    Path("../Dogs.v5i.yolov8"),
+    Path("../ASDF.v1i.yolov8"),
+    Path("../kaggle_yolo")
+]
+```
+
+Alle Bilder und zugehörigen .txt-Labels ohne Hund werden gelöscht – dies reduziert die Datenmenge auf relevante Trainingsbeispiele.
+
+```{python}
+for ds in DATASETS:
+    cfg_path = ds/"data.yaml"
+    if not cfg_path.exists():
+        print(f"⚠️  Keine data.yaml in {ds}, übersprungen.")
+        continue
+
+    # config einlesen und dog_idx bestimmen
+    cfg = yaml.safe_load(cfg_path.read_text())
+    try:
+        dog_idx = cfg["names"].index("dog")
+    except ValueError:
+        print(f"⚠️  'dog' nicht in names von {ds.name}, übersprungen.")
+        continue
+
+    # aus den Pfaden in der YAML die Image-Ordner ableiten
+    splits = {}
+    for key in ("train","val","test"):
+        if key in cfg:
+            rel = Path(cfg[key])
+            splits[key] = ds/rel
+
+    # pro Split alle Bilder ohne dog löschen
+    for key, img_dir in splits.items():
+        lbl_dir = img_dir.parent/"labels"
+        if not img_dir.exists():
+            print(f"   ⏭ {ds.name}/{key}/images nicht vorhanden")
+            continue
+
+        for img_p in img_dir.glob("*.*g"):
+            txt_p = lbl_dir/(img_p.stem + ".txt")
+            keep = False
+            if txt_p.exists():
+                for line in txt_p.read_text().splitlines():
+                    if not line: continue
+                    if int(line.split()[0]) == dog_idx:
+                        keep = True
+                        break
+
+            if not keep:
+                img_p.unlink()
+                if txt_p.exists(): txt_p.unlink()
+                print(f"  removed (no dog) → {ds.name}/{key}/images/{img_p.name}")
+
+    print(f"✅ Bereinigt: {ds.name} (dog_idx = {dog_idx})\n")
+```
+
+Alle Bilder ohne Hund wurden entfernt – nur relevante Daten bleiben erhalten.
+
+Alle data.yaml-Dateien in den verwendeten Datensätzen werden final vereinheitlicht:
+- Nur dog als Klasse
+- Einheitliche Split-Bezeichner
+- Entfernen von ggf. überflüssigen Einträgen wie roboflow
+
+```{python}
+# Pfade zu deinen data.yaml
+yamls = [
+    Path("../DOG.v1i.yolov8/data.yaml"),
+    Path("../Dogs.v5i.yolov8/data.yaml"),
+    Path("../ASDF.v1i.yolov8/data.yaml"),
+    Path("../kaggle_yolo/data.yaml")
+]
+```
+
+```{python}
+for y in yamls:
+    cfg = yaml.safe_load(y.read_text())
+    cfg['nc'] = 1
+    cfg['names'] = ['dog']
+    cfg['train'] = 'train/images'
+    cfg['val']   = 'valid/images'
+    cfg['test']  = 'test/images'
+    cfg.pop('roboflow', None)
+
+    with open(y, 'w') as f:
+        yaml.dump(cfg, f, default_flow_style=False)
+    print(f"✅ {y.name} angepasst.")
+```
+
+Alle Konfigurationsdateien sind nun standardisiert.
+
+Je nach Ursprungsdatensatz kann „dog“ eine andere ID haben. Diese wird jetzt überall auf 0 gesetzt. Andere Klassen (z. B. cat) werden ignoriert.
+
+```{python}
+# Definiere für jedes Dataset den alten Dog-Index (None = alle Klassen → 0)
+mappings = {
+    Path("../ASDF.v1i.yolov8"):   2,   # dort war dog=2
+    Path("../Dogs.v5i.yolov8"):   1,   # dort war dog=1
+    Path("../kaggle_yolo"):      None, # dort sollen _alle_ labels → 0
+}
+
+splits = ["train", "valid", "test"]
+
+for ds, old_idx in mappings.items():
+    for split in splits:
+        lbl_dir = ds / split / "labels"
+        if not lbl_dir.exists():
+            continue
+
+        for txt_file in lbl_dir.glob("*.txt"):
+            lines = txt_file.read_text().splitlines()
+            new = []
+            for L in lines:
+                parts = L.strip().split()
+                if len(parts) < 5:
+                    continue
+                cls = int(parts[0])
+                if old_idx is None or cls == old_idx:
+                    parts[0] = "0"
+                    new.append(" ".join(parts))
+
+            # Datei mit den neuen Zeilen überschreiben
+            txt_file.write_text("\n".join(new) + ("\n" if new else ""))
+            print(f"→ {ds.name}/{split}/labels/{txt_file.name}: {len(new)} dog-bboxes")
+```
+
+Nur die Hund-Bounding-Boxes wurden übernommen, andere gelöscht.
+
+Falls ein Bild kein Label oder ein leeres Label hat, wird es (inkl. Labeldatei) gelöscht. Dies verhindert Fehler beim Training.
+
+```{python}
+for ds in DATASETS:
+    for split in SPLITS:
+        img_dir = ds / split / "images"
+        lbl_dir = ds / split / "labels"
+        if not img_dir.exists() or not lbl_dir.exists():
+            continue
+
+        for img_path in img_dir.glob("*.*g"):
+            txt_path = lbl_dir / f"{img_path.stem}.txt"
+
+            # Kein Label vorhanden → Bild löschen
+            if not txt_path.exists():
+                img_path.unlink()
+                print(f"Removed image without label: {ds.name}/{split}/images/{img_path.name}")
+
+            else:
+                # Label-Datei ist leer → Bild und Label löschen
+                if not txt_path.read_text().strip():
+                    img_path.unlink()
+                    txt_path.unlink()
+                    print(f"Removed empty label and image: {ds.name}/{split}/{img_path.name}")
+```
+
+Die Datenbasis ist nun sauber und einheitlich vorbereitet.
+
+# Neuer Split: 70 % Training, 15 % Validierung, 15 % Test
+
+Nachdem in einem vorherigen Schritt alle Bilder ohne Hunde entfernt wurden, hat sich die Anzahl der gültigen Bild-Label-Paare in den Datensätzen verändert. Deshalb wird in diesem Abschnitt ein neuer, einheitlicher Split im Verhältnis 70/15/15 durchgeführt – direkt in-place auf allen vier vorbereiteten Datensätzen:
+- DOG.v1i.yolov8
+- Dogs.v5i.yolov8
+- ASDF.v1i.yolov8
+- kaggle_yolo
+
+```{python}
+OLD_SPLITS = ["train", "valid", "test"]
+# Die neuen Anteile
+TRAIN_RATIO = 0.70
+VALID_RATIO = 0.15 
+TEST_RATIO  = 0.15
+
+SEED = 42
+random.seed(SEED)
+
+for ds in DATASETS:
+    print(f"\n=== In-Place Resplit {ds.name} (70/15/15) ===")
+    # Sammle alle Bild-/Label-Paare aus allen alten Splits
+    pairs = []
+    for split in OLD_SPLITS:
+        img_dir = ds / split / "images"
+        lbl_dir = ds / split / "labels"
+        if not img_dir.exists() or not lbl_dir.exists():
+            continue
+        for img_p in img_dir.glob("*.*g"):
+            lbl_p = lbl_dir / f"{img_p.stem}.txt"
+            if lbl_p.exists():
+                pairs.append((img_p, lbl_p))
+    print(f"Found {len(pairs)} labeled images total")
+    if not pairs:
+        print(" → keine Paare gefunden, skip.")
+        continue
+
+    # Shuffle & neue Splits berechnen
+    train_pairs, rest = train_test_split(pairs, train_size=TRAIN_RATIO, random_state=SEED)
+    valid_pairs, test_pairs = train_test_split(
+        rest, train_size=VALID_RATIO/(VALID_RATIO+TEST_RATIO), random_state=SEED
+    )
+    new_splits = {
+        "train": train_pairs,
+        "valid": valid_pairs,
+        "test":  test_pairs
+    }
+
+    # Erstelle temporäre Split-Ordner und fülle sie
+    for split, split_pairs in new_splits.items():
+        tmp_img = ds / f"{split}_tmp" / "images"
+        tmp_lbl = ds / f"{split}_tmp" / "labels"
+        tmp_img.mkdir(parents=True, exist_ok=True)
+        tmp_lbl.mkdir(parents=True, exist_ok=True)
+
+        for img_p, lbl_p in split_pairs:
+            shutil.copy2(img_p, tmp_img / img_p.name)
+            shutil.copy2(lbl_p, tmp_lbl / lbl_p.name)
+        print(f"  {split:5s} tmp: {len(split_pairs)} images → {tmp_img.parent}")
+
+    # Lösche die alten Split-Ordner und benenne tmp um
+    for split in OLD_SPLITS:
+        old_split = ds / split
+        tmp_split = ds / f"{split}_tmp"
+        if tmp_split.exists():
+            if old_split.exists():
+                shutil.rmtree(old_split)
+            tmp_split.rename(old_split)
+            print(f"  replaced {old_split} with new {tmp_split.name}")
+
+print("\n✅ Resplit (70/15/15) abgeschlossen.")
+```
+
+Für jeden Datensatz wird die neue Aufteilung erfolgreich erstellt und die alten Ordner werden durch die aktualisierten Versionen ersetzt.
+
+Alle Datensätze liegen nun in einem einheitlichen, aktuellen Zustand vor, der ausschliesslich Bilder mit mindestens einem Hund enthält. Der neue Split stellt sicher, dass Trainings-, Validierungs- und Testdaten sauber voneinander getrennt sind – ideal für eine faire und reproduzierbare Modellbewertung.
+
+# Training der YOLOv8-Modelle
+
+In diesem Abschnitt werden für alle vier vorbereiteten Datensätze eigenständige YOLOv8n-Modelle trainiert. Ziel ist es, die Leistungsfähigkeit des Objektdetektors auf den verschiedenen Datensätzen systematisch zu vergleichen.
+
+```{python}
+def train_yolo(name, data_yaml, epochs=20, imgsz=640, batch=4, workers=2):
+    """
+    Trainiert ein YOLOv8-Modell mit den gegebenen Parametern.
+    - name: Name des Run-Ordners (runs/name)
+    - data_yaml: Pfad zur Daten-YAML
+    """
+    model = YOLO('yolov8n.pt')
+    model.train(
+        data      = data_yaml,
+        imgsz     = imgsz,
+        epochs    = epochs,
+        batch     = batch,
+        workers   = workers,
+        project   = 'runs',
+        name      = name,
+        exist_ok  = True
+    )
+    print(f"✅ Training {name} abgeschlossen.")
+```
+
+```{python}
+# Pfad zur YAML im DOG.v1i-Ordner
+yaml_path = '../DOG.v1i.yolov8/data.yaml'
+train_yolo('dog_v1i', yaml_path, epochs=20, batch=8, workers=4)
+```
+
+```{python}
+yaml_path = '../Dogs.v5i.yolov8/data.yaml'
+train_yolo('dogs_v5i', yaml_path, epochs=20, batch=8, workers=4)
+```
+
+```{python}
+yaml_path = '../ASDF.v1i.yolov8/data.yaml'
+train_yolo('asdf_v1i', yaml_path, epochs=20, batch=8, workers=4)
+```
+
+```{python}
+yaml_path = '../kaggle_yolo/data.yaml'
+train_yolo('kaggle', yaml_path, epochs=20, batch=8, workers=4)
+```
+
+Nach diesem Abschnitt liegen vier separat trainierte YOLOv8-Modelle vor – jeweils eines pro Datensatz. Alle Modelle basieren auf denselben Trainingsparametern und erlauben so eine faire, datensatzübergreifende Bewertung der Erkennungsleistung für Hunde.
+
+# 10. Ergebnisse visualisieren
+
+Nach dem Training der YOLOv8-Modelle für die vier Datensätze (dog_v1i, dogs_v5i, asdf_v1i, kaggle) erfolgt nun eine detaillierte Auswertung anhand zentraler Metriken:
+- Precision – Wie viele der als „Hund“ erkannten Objekte sind tatsächlich Hunde?
+- Recall – Wie viele der tatsächlich vorhandenen Hunde wurden erkannt?
+- mAP@0.5 – Mittlere durchschnittliche Genauigkeit bei einem IoU-Schwellenwert von 0.5 (Standard für Objekterkennung).
+
+Für jeden Datensatz wurden die Metriken über 20 Epochen hinweg aufgezeichnet und visualisiert.
+
+```{python}
+%matplotlib inline
+results_dog_v1i = pd.read_csv('runs/dog_v1i/results.csv')
+
+# Gruppieren nach Epoche und Mittelwert bilden
+grouped_dog_v1i = results_dog_v1i.groupby('epoch').mean(numeric_only=True)
+
+# Detection Metrics plotten
+plt.figure(figsize=(12, 6))
+plt.plot(grouped_dog_v1i.index, grouped_dog_v1i['metrics/precision(B)'], label='Precision')
+plt.plot(grouped_dog_v1i.index, grouped_dog_v1i['metrics/recall(B)'], label='Recall')
+plt.plot(grouped_dog_v1i.index, grouped_dog_v1i['metrics/mAP50(B)'], label='mAP@0.5')
+plt.xlabel('Epoch'); plt.ylabel('Value')
+plt.title('Detection Metrics Baseline von dog_v1i')
+plt.legend(); plt.grid(True)
+plt.show()
+
+print("Dog v1i Metrics:")
+print(grouped_dog_v1i[['metrics/precision(B)', 'metrics/recall(B)', 'metrics/mAP50(B)']])
+```
+
+- Anfangs starke Schwankungen bei allen Metriken.
+- Im späteren Trainingsverlauf deutliche Verbesserung, besonders bei Precision.
+- mAP@0.5 stabilisiert sich gegen Ende bei rund 0.74.
+
+```{python}
+%matplotlib inline
+results_dogs_v5i = pd.read_csv('runs/dogs_v5i/results.csv')
+
+# Gruppieren nach Epoche und Mittelwert bilden
+grouped_dogs_v5i = results_dogs_v5i.groupby('epoch').mean(numeric_only=True)
+
+# Detection Metrics plotten
+plt.figure(figsize=(12, 6))
+plt.plot(grouped_dogs_v5i.index, grouped_dogs_v5i['metrics/precision(B)'], label='Precision')
+plt.plot(grouped_dogs_v5i.index, grouped_dogs_v5i['metrics/recall(B)'], label='Recall')
+plt.plot(grouped_dogs_v5i.index, grouped_dogs_v5i['metrics/mAP50(B)'], label='mAP@0.5')
+plt.xlabel('Epoch'); plt.ylabel('Value')
+plt.title('Detection Metrics Baseline von dogs_v5i')
+plt.legend(); plt.grid(True)
+plt.show()
+
+print("Dogs v5i Metrics:")
+print(grouped_dogs_v5i[['metrics/precision(B)', 'metrics/recall(B)', 'metrics/mAP50(B)']])
+```
+
+- Sehr stabiles und schnelles Wachstum der Metriken.
+- Bereits ab Epoche 5 liegt Precision und mAP@0.5 bei über 0.8.
+- mAP@0.5, Precision als auch Recall erreichen einen Wert über 0.95 → exzellente Datenqualität.
+
+```{python}
+%matplotlib inline
+results_asdf_v1i = pd.read_csv('runs/asdf_v1i/results.csv')
+
+# Gruppieren nach Epoche und Mittelwert bilden
+grouped_asdf_v1i = results_asdf_v1i.groupby('epoch').mean(numeric_only=True)
+
+# Detection Metrics plotten
+plt.figure(figsize=(12, 6))
+plt.plot(grouped_asdf_v1i.index, grouped_asdf_v1i['metrics/precision(B)'], label='Precision')
+plt.plot(grouped_asdf_v1i.index, grouped_asdf_v1i['metrics/recall(B)'], label='Recall')
+plt.plot(grouped_asdf_v1i.index, grouped_asdf_v1i['metrics/mAP50(B)'], label='mAP@0.5')
+plt.xlabel('Epoch'); plt.ylabel('Value')
+plt.title('Detection Metrics Baseline von asdf_v1i')
+plt.legend(); plt.grid(True)
+plt.show()
+
+print("Asdf v1i Metrics:")
+print(grouped_asdf_v1i[['metrics/precision(B)', 'metrics/recall(B)', 'metrics/mAP50(B)']])
+```
+
+- Sehr unruhiger Verlauf, insbesondere bei allen Metriken.
+- Deutlicher Hinweis auf inkonsistente Trainingsdaten.
+
+```{python}
+%matplotlib inline
+results_kaggle = pd.read_csv('runs/kaggle/results.csv')
+
+# Gruppieren nach Epoche und Mittelwert bilden
+grouped_kaggle = results_kaggle.groupby('epoch').mean(numeric_only=True)
+
+# Detection Metrics plotten
+plt.figure(figsize=(12, 6))
+plt.plot(grouped_kaggle.index, grouped_kaggle['metrics/precision(B)'], label='Precision')
+plt.plot(grouped_kaggle.index, grouped_kaggle['metrics/recall(B)'], label='Recall')
+plt.plot(grouped_kaggle.index, grouped_kaggle['metrics/mAP50(B)'], label='mAP@0.5')
+plt.xlabel('Epoch'); plt.ylabel('Value')
+plt.title('Detection Metrics Baseline von kaggle')
+plt.legend(); plt.grid(True)
+plt.show()
+
+print("Kaggle Metrics:")
+print(grouped_kaggle[['metrics/precision(B)', 'metrics/recall(B)', 'metrics/mAP50(B)']])
+```
+
+- Konstant hohe Werte über alle Metriken hinweg.
+- mAP@0.5 ab Epoche 10 fast durchgehend bei ~0.98.
+- Der Datensatz scheint besonders sauber und leicht trainierbar zu sein.
+
+```{python}
+# Durchschnittswerte über alle Epochen berechnen
+metrics_summary = pd.DataFrame({
+    'dog_v1i': {
+        'Precision': grouped_dog_v1i['metrics/precision(B)'].mean(),
+        'Recall': grouped_dog_v1i['metrics/recall(B)'].mean(),
+        'mAP@0.5': grouped_dog_v1i['metrics/mAP50(B)'].mean()
+    },
+    'dogs_v5i': {
+        'Precision': grouped_dogs_v5i['metrics/precision(B)'].mean(),
+        'Recall': grouped_dogs_v5i['metrics/recall(B)'].mean(),
+        'mAP@0.5': grouped_dogs_v5i['metrics/mAP50(B)'].mean()
+    },
+    'asdf_v1i': {
+        'Precision': grouped_asdf_v1i['metrics/precision(B)'].mean(),
+        'Recall': grouped_asdf_v1i['metrics/recall(B)'].mean(),
+        'mAP@0.5': grouped_asdf_v1i['metrics/mAP50(B)'].mean()
+    },
+    'kaggle': {
+        'Precision': grouped_kaggle['metrics/precision(B)'].mean(),
+        'Recall': grouped_kaggle['metrics/recall(B)'].mean(),
+        'mAP@0.5': grouped_kaggle['metrics/mAP50(B)'].mean()
+    }
+}).T
+```
+
+```{python}
+# Barplot für Precision, Recall und mAP@0.5
+plt.figure(figsize=(12, 6))
+x = range(len(metrics_summary))
+width = 0.25
+
+bars1 = plt.bar([i - width for i in x], metrics_summary['Precision'], width, label='Precision')
+bars2 = plt.bar(x,                 metrics_summary['Recall'],    width, label='Recall')
+bars3 = plt.bar([i + width for i in x], metrics_summary['mAP@0.5'], width, label='mAP@0.5')
+
+# Werte direkt an die Bars hängen
+plt.bar_label(bars1, fmt="%.2f", padding=3)
+plt.bar_label(bars2, fmt="%.2f", padding=3)
+plt.bar_label(bars3, fmt="%.2f", padding=3)
+
+plt.xticks(ticks=x, labels=metrics_summary.index)
+plt.ylabel('Durchschnittlicher Wert')
+plt.title('Durchschnitt: Precision, Recall & mAP@0.5 über alle Epochen')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+```
+
+In dieser Balkengrafik sind die durchschnittlichen Werte für Precision, Recall und mAP@0.5 pro Datensatz zusammengefasst:
+
+| Datensatz | Precision | Recall | mAP@0.5 |
+|-----------|-----------|--------|---------|
+| **kaggle** | ~0.92 | ~0.90 | ~0.95 |
+| **dogs_v5i** | ~0.89 | ~0.84 | ~0.88 |
+| **asdf_v1i** | ~0.69 | ~0.71 | ~0.69 |
+| **dog_v1i** | 0.49 | 0.63 | 0.55 |
+
+- Der beste Gesamtwert wurde auf dem Kaggle-Datensatz erzielt.
+- Der Dogs.v5i-Datensatz ist ebenfalls sehr stark, zeigt aber geringfügig mehr Streuung.
+- dog_v1i und asdf_v1i schneiden deutlich schwächer ab – was auf kleinere Datenmengen, Datenrauschen oder schlechtere Annotationen hinweist.
+
+# Datenaugmentation und Upsampling für asdf_v1i und dog_v1i Dataset
+
+Im nächsten Schritt werden die beiden Datensätze mit geringer Bildzahl und schwacher Performance (asdf_v1i und dog_v1i) durch künstliche Datenaugmentation vergrössert und anschliessend erneut in 70 % Train / 15 % Valid / 15 % Test aufgeteilt.
+
+```{python}
+def augment_and_resplit(
+    ds_path: Path,
+    K: int = 3,
+    train_ratio: float = 0.70,
+    valid_ratio: float = 0.15,
+    test_ratio: float = 0.15,
+    seed: int = 42
+):
+    # Pfade
+    train_dir   = ds_path / "train"
+    images_dir  = train_dir / "images"
+    labels_dir  = train_dir / "labels"
+    aug_dir     = ds_path / "train_upsampled"
+    aug_images  = aug_dir / "images"
+    aug_labels  = aug_dir / "labels"
+
+    # Augmentations-Pipeline
+    transform = A.Compose([
+        A.HorizontalFlip(p=0.5),
+        A.RandomBrightnessContrast(p=0.5),
+        A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.2, rotate_limit=15, p=0.5),
+        A.GaussNoise(p=0.2),
+    ], bbox_params=A.BboxParams(format='yolo', label_fields=['class_labels']))
+
+    def parse_yolo(txt_path):
+        bboxes, labels = [], []
+        for l in open(txt_path).read().splitlines():
+            cls, x, y, w, h = l.split()
+            labels.append(int(cls))
+            bboxes.append([float(x), float(y), float(w), float(h)])
+        return bboxes, labels
+
+    def save_yolo(txt_path, bboxes, labels):
+        with open(txt_path, 'w') as f:
+            for cls, bb in zip(labels, bboxes):
+                x, y, w, h = bb
+                f.write(f"{cls} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\n")
+
+    # train_upsampled neu erstellen
+    if aug_dir.exists():
+        shutil.rmtree(aug_dir)
+    aug_images.mkdir(parents=True, exist_ok=True)
+    aug_labels.mkdir(parents=True, exist_ok=True)
+
+    # Upsampling
+    img_paths = list(images_dir.glob("*.*g"))
+    for img_path in img_paths:
+        stem       = img_path.stem
+        label_path = labels_dir / f"{stem}.txt"
+        if not label_path.exists():
+            continue
+
+        # Original kopieren
+        shutil.copy2(img_path,     aug_images / img_path.name)
+        shutil.copy2(label_path,   aug_labels / label_path.name)
+
+        # K-fache Augmentation
+        image = cv2.cvtColor(cv2.imread(str(img_path)), cv2.COLOR_BGR2RGB)
+        bboxes, class_labels = parse_yolo(label_path)
+        for i in range(K):
+            out = transform(image=image, bboxes=bboxes, class_labels=class_labels)
+            if not out['bboxes']:
+                continue
+            aug_img = cv2.cvtColor(out['image'], cv2.COLOR_RGB2BGR)
+            fname   = f"{stem}_aug{i}.jpg"
+            cv2.imwrite(str(aug_images / fname), aug_img)
+            save_yolo(str(aug_labels / f"{stem}_aug{i}.txt"), out['bboxes'], out['class_labels'])
+
+    print(f"✅ [{ds_path.name}] Upsampled {len(img_paths)} → {len(list(aug_images.glob('*.*g')))} imgs")
+
+    # data.yaml anpassen
+    cfg_path = ds_path / "data.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg['train'] = 'train_upsampled/images'
+    with open(cfg_path, 'w') as f:
+        yaml.dump(cfg, f, default_flow_style=False)
+    print(f"✅ [{ds_path.name}] data.yaml aktualisiert")
+
+    # Paare sammeln und Split
+    pairs = [
+        (img_p, aug_labels / f"{img_p.stem}.txt")
+        for img_p in aug_images.glob("*.*g")
+        if (aug_labels / f"{img_p.stem}.txt").exists()
+    ]
+    train_p, rest   = train_test_split(pairs, train_size=train_ratio, random_state=seed)
+    valid_p, test_p = train_test_split(
+        rest,
+        train_size=valid_ratio / (valid_ratio + test_ratio),
+        random_state=seed
+    )
+
+    # Alte Splits löschen/neu anlegen
+    for split in ("train","valid","test"):
+        for sub in ("images","labels"):
+            folder = ds_path / split / sub
+            if folder.exists():
+                shutil.rmtree(folder)
+            folder.mkdir(parents=True)
+
+    # Neue Splits füllen
+    for split_name, split_data in zip(("train","valid","test"), (train_p, valid_p, test_p)):
+        for img_p, lbl_p in split_data:
+            shutil.copy2(img_p, ds_path / split_name / "images" / img_p.name)
+            shutil.copy2(lbl_p, ds_path / split_name / "labels" / lbl_p.name)
+        print(f"→ [{ds_path.name}] {split_name}: {len(split_data)} Bilder")
+
+    print(f"✅ [{ds_path.name}] Resplit abgeschlossen (70/15/15).")
+```
+
+Wir setzen eine Reihe realistischer Transformationen auf Bilder und Bounding-Boxes auf:
+- Horizontaler Flip
+- Zufällige Helligkeits-/Kontrastanpassung
+- Kleine Verschiebung, Skalierung, Rotation
+- Hinzufügen von Rauschen
+
+Der train-Pfad wird auf train_upsampled/images umgestellt, damit YOLO beim nächsten Training die vergrösserte Datenbasis nutzt.
+
+```{python}
+datasets = [
+    Path("../ASDF.v1i.yolov8"),
+    Path("../DOG.v1i.yolov8")
+]
+
+for ds in datasets:
+    augment_and_resplit(ds, K=3, train_ratio=0.7, valid_ratio=0.15, test_ratio=0.15, seed=42)
+```
+
+Für ASDF.v1i:
+- 56 → 224 zeigt, dass jedes der 56 Originalbilder nun inklusive Augmentierungen insgesamt 224 Beispiele ergibt.
+- Die neuen Split-Grössen betragen nun (156 / 34 / 34).
+
+Für DOG.v1i:
+- 180 → 720 dokumentiert die Vergrösserung durch 3-fache Augmentation.
+- Die finalen Split-Zahlen betragen (503 / 108 / 109).
+
+Durch das Upsampling und die Datenaugmentation wurden die beiden kleinen Datensätze um das Vierfache vergrössert, wodurch mehr Trainingsbeispiele zur Verfügung stehen. Anschliessend sorgt der erneute Split für konsistente und faire Trainings-, Validierungs- und Testmengen im vereinbarten 70/15/15-Verhältnis.
+
+# Training mit augmentierten Daten
+
+Im folgenden Abschnitt vergleichen wir die Trainingsergebnisse der beiden zuvor schwach performenden Datensätze asdf_v1i und dog_v1i vor und nach Augmentation & Upsampling.
+
+```{python}
+yaml_path = '../ASDF.v1i.yolov8/data.yaml'
+train_yolo('asdf_v1i_upsampled', yaml_path, epochs=20, batch=8, workers=4)
+```
+
+```{python}
+yaml_path = '../DOG.v1i.yolov8/data.yaml'
+train_yolo('dog_v1i_upsampled', yaml_path, epochs=20, batch=8, workers=4)
+```
+
+```{python}
+%matplotlib inline
+results_asdf_v1i_aug = pd.read_csv('runs/asdf_v1i_upsampled/results.csv')
+
+# Gruppieren nach Epoche und Mittelwert bilden
+grouped_asdf_v1i_aug = results_asdf_v1i_aug.groupby('epoch').mean(numeric_only=True)
+
+# Detection Metrics plotten
+plt.figure(figsize=(12, 6))
+plt.plot(grouped_asdf_v1i_aug.index, grouped_asdf_v1i_aug['metrics/precision(B)'], label='Precision')
+plt.plot(grouped_asdf_v1i_aug.index, grouped_asdf_v1i_aug['metrics/recall(B)'], label='Recall')
+plt.plot(grouped_asdf_v1i_aug.index, grouped_asdf_v1i_aug['metrics/mAP50(B)'], label='mAP@0.5')
+plt.xlabel('Epoch'); plt.ylabel('Value')
+plt.title('Detection Metrics Baseline asdf_v1i mit Datenaugmentation und Upsampling')
+plt.legend(); plt.grid(True)
+plt.show()
+
+print("Dog v1i Metrics:")
+print(grouped_asdf_v1i_aug[['metrics/precision(B)', 'metrics/recall(B)', 'metrics/mAP50(B)']])
+```
+
+- Precision und mAP starten bei sehr niedrigen Werten (< 0.2), Recall liegt zunächst bei 1.0 (wegen sehr kleiner Validierungsmenge).
+- Deutlicher Anstieg aller Metriken von ~0.2 auf ~0.8.
+- Precision und mAP stabilisieren sich nahe 1.0, Recall legt bis ca. 0.95 zu.
+
+Fazit: Die augmentierten Daten erlauben dem Modell, viel schneller und zuverlässiger Hunde zu erkennen – mAP und Precision steigen im Vergleich zur Vorgängerversion massiv.
+
+```{python}
+%matplotlib inline
+results_dog_v1i_aug = pd.read_csv('runs/dog_v1i_upsampled/results.csv')
+
+# Gruppieren nach Epoche und Mittelwert bilden
+grouped_dog_v1i_aug = results_dog_v1i_aug.groupby('epoch').mean(numeric_only=True)
+
+# Detection Metrics plotten
+plt.figure(figsize=(12, 6))
+plt.plot(grouped_dog_v1i_aug.index, grouped_dog_v1i_aug['metrics/precision(B)'], label='Precision')
+plt.plot(grouped_dog_v1i_aug.index, grouped_dog_v1i_aug['metrics/recall(B)'], label='Recall')
+plt.plot(grouped_dog_v1i_aug.index, grouped_dog_v1i_aug['metrics/mAP50(B)'], label='mAP@0.5')
+plt.xlabel('Epoch'); plt.ylabel('Value')
+plt.title('Detection Metrics Baseline dog_v1i mit Datenaugmentation und Upsampling')
+plt.legend(); plt.grid(True)
+plt.show()
+
+print("Dog v1i Metrics:")
+print(grouped_dog_v1i_aug[['metrics/precision(B)', 'metrics/recall(B)', 'metrics/mAP50(B)']])
+```
+
+- Precision startet bei ~0.5, Recall bei ~0.5, mAP bei ~0.48.
+- Zwischen Epoche 5 und 10 springen alle Kurven auf ~0.75–0.85.
+- Alle drei Metriken nähern sich gegen Epoche 20 Werte um 0.94–0.98.
+
+Fazit: Auch beim dog_v1i führt Upsampling und Augmentation zu einer spürbaren Steigerung aller Kennzahlen und einer schnelleren Konvergenz.
+
+```{python}
+metrics_aug = pd.DataFrame({
+    'dog_v1i': {
+        'Precision': grouped_dog_v1i['metrics/precision(B)'].mean(),
+        'Recall': grouped_dog_v1i['metrics/recall(B)'].mean(),
+        'mAP@0.5': grouped_dog_v1i['metrics/mAP50(B)'].mean()
+    },
+    'dog_v1i_aug': {
+        'Precision': grouped_dog_v1i_aug['metrics/precision(B)'].mean(),
+        'Recall':    grouped_dog_v1i_aug['metrics/recall(B)'].mean(),
+        'mAP@0.5':   grouped_dog_v1i_aug['metrics/mAP50(B)'].mean()
+    },
+    'asdf_v1i': {
+        'Precision': grouped_asdf_v1i['metrics/precision(B)'].mean(),
+        'Recall': grouped_asdf_v1i['metrics/recall(B)'].mean(),
+        'mAP@0.5': grouped_asdf_v1i['metrics/mAP50(B)'].mean()
+    },
+    'asdf_v1i_aug': {
+        'Precision': grouped_asdf_v1i_aug['metrics/precision(B)'].mean(),
+        'Recall':    grouped_asdf_v1i_aug['metrics/recall(B)'].mean(),
+        'mAP@0.5':   grouped_asdf_v1i_aug['metrics/mAP50(B)'].mean()
+    }
+}).T
+```
+
+```{python}
+# Barplot für Precision, Recall und mAP@0.5
+plt.figure(figsize=(12, 6))
+x = range(len(metrics_aug))
+width = 0.25
+
+bars1 = plt.bar([i - width for i in x], metrics_aug['Precision'], width, label='Precision')
+bars2 = plt.bar(x, metrics_aug['Recall'],    width, label='Recall')
+bars3 = plt.bar([i + width for i in x], metrics_aug['mAP@0.5'], width, label='mAP@0.5')
+
+# Werte direkt an die Bars hängen
+plt.bar_label(bars1, fmt="%.2f", padding=3)
+plt.bar_label(bars2, fmt="%.2f", padding=3)
+plt.bar_label(bars3, fmt="%.2f", padding=3)
+
+plt.xticks(ticks=x, labels=metrics_aug.index)
+plt.ylabel('Durchschnittlicher Wert')
+plt.title('Durchschnitt: Precision, Recall & mAP@0.5 über alle Epochen')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+```
+
+| Datensatz | Precision | Recall | mAP@0.5 |
+|-----------|-----------|--------|---------|
+| **asdf_v1i** | ~0.24 | ~0.47 | ~0.29 |
+| **asdf_v1i_aug** | ~0.68 | ~0.71 | ~0.68 |
+| **dog_v1i** | ~0.51 | ~0.63 | ~0.56 |
+| **dog_v1i_aug** | 0.82 | 0.79 | 0.82 |
+
+- dog_v1i: Precision steigt von 0.51 auf 0.82, Recall von 0.63 auf 0.79, mAP von 0.56 auf 0.82.
+- asdf_v1i: Precision verbessert sich von 0.24 auf 0.68, Recall von 0.47 auf 0.71, mAP von 0.29 auf 0.68.
+
+Durch gezielte Datenaugmentation und Upsampling konnten beide kleinen Datensätze qualitativ auf ein deutlich höheres Niveau gehoben werden. Die Modelle erreichen nun ähnliche Kennzahlen wie die grösseren Datensätze – ein klarer Beleg, dass künstliche Erweiterung bei limitierten Daten sehr effektiv ist.
+
+# Fehleranalyse (False Positives & Negatives)
+
+In diesem Abschnitt führen wir eine qualitative Fehleranalyse auf dem Test-Set des augmentierten Modells durch, um typische Fehlklassifikationen zu identifizieren.
+
+```{python}
+def compute_iou(box1, box2):
+    def to_xyxy(box):
+        x_c, y_c, w, h = box
+        return x_c - w/2, y_c - h/2, x_c + w/2, y_c + h/2
+
+    x1_1, y1_1, x2_1, y2_1 = to_xyxy(box1)
+    x1_2, y1_2, x2_2, y2_2 = to_xyxy(box2)
+
+    xi1, yi1 = max(x1_1, x1_2), max(y1_1, y1_2)
+    xi2, yi2 = min(x2_1, x2_2), min(y2_1, y2_2)
+
+    inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
+    union_area = (x2_1 - x1_1) * (y2_1 - y1_1) + (x2_2 - x1_2) * (y2_2 - y1_2) - inter_area
+
+    return inter_area / union_area if union_area else 0.0
+
+
+def analyze_model_errors(model_path, test_dir, label_dir):
+    model = YOLO(model_path)
+    test_dir = Path(test_dir)
+    label_dir = Path(label_dir)
+
+    false_positives, false_negatives = [], []
+
+    for img_path in test_dir.glob("*.*g"):
+        stem = img_path.stem
+        label_path = label_dir / f"{stem}.txt"
+
+        gt_boxes = []
+        if label_path.exists():
+            for line in open(label_path):
+                parts = list(map(float, line.strip().split()))
+                gt_boxes.append(parts[1:])
+
+        results = model(str(img_path))
+        preds = results[0].boxes
+        pred_boxes = preds.xywhn.cpu().numpy() if preds else []
+
+        for p_box in pred_boxes:
+            if max((compute_iou(p_box, gt) for gt in gt_boxes), default=0.0) < 0.5:
+                false_positives.append((img_path.name, p_box.tolist()))
+
+        for gt in gt_boxes:
+            if max((compute_iou(gt, p_box) for p_box in pred_boxes), default=0.0) < 0.5:
+                false_negatives.append((img_path.name, gt))
+
+    return false_positives, false_negatives
+
+def draw_box(img, box, color=(0,255,0), label=""):
+    h, w = img.shape[:2]
+    x, y, bw, bh = box
+    x1 = int((x - bw/2) * w)
+    y1 = int((y - bh/2) * h)
+    x2 = int((x + bw/2) * w)
+    y2 = int((y + bh/2) * h)
+    cv2.rectangle(img, (x1,y1), (x2,y2), color, 2)
+    if label:
+        cv2.putText(img, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+```
+
+```{python}
+name = "dog_v1i_upsampled"
+model_path = "runs/dog_v1i_upsampled/weights/best.pt"
+img_dir = "../DOG.v1i.yolov8/test/images"
+lbl_dir = "../DOG.v1i.yolov8/test/labels"
+
+fp, fn = analyze_model_errors(model_path, img_dir, lbl_dir)
+print(f"\n📊 Analyse für Modell: {name}")
+print(f"❌ False Positives: {len(fp)}")
+print(f"❌ False Negatives: {len(fn)}")
+```
+
+Das Modell macht 12 fälschliche Erkennungen (FP) und übersieht 3 Hunde (FN) im Test-Set.
+
+```{python}
+base_path = Path(img_dir)
+print("\n📷 False Positives:")
+for img_name, box in fp[:5]:
+    img = cv2.cvtColor(cv2.imread(str(base_path / img_name)), cv2.COLOR_BGR2RGB)
+    draw_box(img, box, color=(255,0,0), label="FP")
+    plt.imshow(img); plt.title(f"False Positive: {img_name}")
+    plt.axis('off'); plt.show()
+
+print("\n📷 False Negatives:")
+for img_name, box in fn[:5]:
+    img = cv2.cvtColor(cv2.imread(str(base_path / img_name)), cv2.COLOR_BGR2RGB)
+    draw_box(img, box, color=(255,255,0), label="FN")
+    plt.imshow(img); plt.title(f"False Negative: {img_name}")
+    plt.axis('off'); plt.show()
+```
+
+- False Positives entstehen meist an Bildrändern oder bei ähnlichen Texturen/Motivfragmenten, die das Modell mit Hundekonturen verwechselt.
+- False Negatives treten vor allem bei sehr kleinen oder teilverdeckt abgebildeten Hunden auf.
+
+```{python}
+name = "dogs_v5i"
+model_path = "runs/dogs_v5i/weights/best.pt"
+img_dir = "../Dogs.v5i.yolov8/test/images"
+lbl_dir = "../Dogs.v5i.yolov8/test/labels"
+
+fp, fn = analyze_model_errors(model_path, img_dir, lbl_dir)
+print(f"\n📊 Analyse für Modell: {name}")
+print(f"❌ False Positives: {len(fp)}")
+print(f"❌ False Negatives: {len(fn)}")
+```
+
+- 5 False Positives: Das Modell erkennt in fünf Fällen Objekte als Hund, obwohl keine Ground-Truth-Box vorhanden ist.
+- 2 False Negatives: Zwei tatsächliche Hunde werden nicht erkannt.
+
+```{python}
+base_path = Path(img_dir)
+print("\n📷 False Positives:")
+for img_name, box in fp[:5]:
+    img = cv2.cvtColor(cv2.imread(str(base_path / img_name)), cv2.COLOR_BGR2RGB)
+    draw_box(img, box, color=(255,0,0), label="FP")
+    plt.imshow(img); plt.title(f"False Positive: {img_name}")
+    plt.axis('off'); plt.show()
+
+print("\n📷 False Negatives:")
+for img_name, box in fn[:5]:
+    img = cv2.cvtColor(cv2.imread(str(base_path / img_name)), cv2.COLOR_BGR2RGB)
+    draw_box(img, box, color=(255,255,0), label="FN")
+    plt.imshow(img); plt.title(f"False Negative: {img_name}")
+    plt.axis('off'); plt.show()
+```
+
+- False Positives entstehen häufig bei hellem Licht, starken Reflexionen oder dünnen Strukturen am Bildrand, die das Modell mit Hundekonturen verwechselt.
+- False Negatives sind klein abgebildete oder stark verschattete Hunde, deren Merkmale nicht deutlich genug herausstechen.
+
+```{python}
+name = "asdf_v1i_upsampled"
+model_path = "runs/asdf_v1i_upsampled/weights/best.pt"
+img_dir = "../ASDF.v1i.yolov8/test/images"
+lbl_dir = "../ASDF.v1i.yolov8/test/labels"
+
+fp, fn = analyze_model_errors(model_path, img_dir, lbl_dir)
+print(f"\n📊 Analyse für Modell: {name}")
+print(f"❌ False Positives: {len(fp)}")
+print(f"❌ False Negatives: {len(fn)}")
+```
+
+- 5 FP: Fünfmal wurde ein Objekt als Hund erkannt, obwohl keine Ground-Truth-Box existierte.
+- 0 FN: Kein einziger Hund wurde komplett übersehen – das Modell findet alle annotierten Hunde.
+
+```{python}
+base_path = Path(img_dir)
+print("\n📷 False Positives:")
+for img_name, box in fp[:5]:
+    img = cv2.cvtColor(cv2.imread(str(base_path / img_name)), cv2.COLOR_BGR2RGB)
+    draw_box(img, box, color=(255,0,0), label="FP")
+    plt.imshow(img); plt.title(f"False Positive: {img_name}")
+    plt.axis('off'); plt.show()
+
+print("\n📷 False Negatives:")
+for img_name, box in fn[:5]:
+    img = cv2.cvtColor(cv2.imread(str(base_path / img_name)), cv2.COLOR_BGR2RGB)
+    draw_box(img, box, color=(255,255,0), label="FN")
+    plt.imshow(img); plt.title(f"False Negative: {img_name}")
+    plt.axis('off'); plt.show()
+```
+
+- Keine FN: Sehr gutes Recall-Verhalten – das Modell verpasst keine Ground-Truth-Objekte mehr.
+- Wenige FP: Die verbliebenen Fehlklassifikationen entstehen vor allem durch:
+    - sehr verrauschte oder unscharfe Flächen
+    - strukturelle Bildartefakte (z. B. Pfosten, Polster), die das Modell mit Hundeformen verwechselt
+
+```{python}
+name = "kaggle"
+model_path = "runs/kaggle/weights/best.pt"
+img_dir = "../kaggle_yolo/test/images"
+lbl_dir = "../kaggle_yolo/test/labels"
+
+fp, fn = analyze_model_errors(model_path, img_dir, lbl_dir)
+print(f"\n📊 Analyse für Modell: {name}")
+print(f"❌ False Positives: {len(fp)}")
+print(f"❌ False Negatives: {len(fn)}")
+```
+
+- 4 FP: Viermal wurde ein Bereich als Hund erkannt, obwohl keine Ground-Truth-Box existiert.
+- 4 FN: Vier annotierte Hunde wurden nicht erkannt.
+
+```{python}
+base_path = Path(img_dir)
+print("\n📷 False Positives:")
+for img_name, box in fp[:5]:
+    img = cv2.cvtColor(cv2.imread(str(base_path / img_name)), cv2.COLOR_BGR2RGB)
+    draw_box(img, box, color=(255,0,0), label="FP")
+    plt.imshow(img); plt.title(f"False Positive: {img_name}")
+    plt.axis('off'); plt.show()
+
+print("\n📷 False Negatives:")
+for img_name, box in fn[:5]:
+    img = cv2.cvtColor(cv2.imread(str(base_path / img_name)), cv2.COLOR_BGR2RGB)
+    draw_box(img, box, color=(255,255,0), label="FN")
+    plt.imshow(img); plt.title(f"False Negative: {img_name}")
+    plt.axis('off'); plt.show()
+```
+
+- False Positives entstehen hier oft durch:
+    - Überdimensionierte Bounding Boxes, wenn nur Teilobjekte gelabelt sind.
+    - Hochkontrastige Formen (Ohren, Ast), die das Modell als vollständigen Körper interpretiert.
+- False Negatives liegen an:
+    - kleinen, teilverdeckt abgebildeten Hunden am Bildrand.
+    - ungewöhnlichen Posen oder Graustufenbildern, die in den Trainingsdaten rar waren.
+
+# Zusammenfassung
+
+1. Datennormalisierung
+Alle vier Datensätze wurden auf eine einheitliche YOLO-Ordnerstruktur und Label-Definition (nur „dog“) gebracht. Durch konsequentes Entfernen nicht relevanter Klassen und fehlerhafter Labels entstand eine saubere, vergleichbare Datenbasis.
+
+2. Trainingsvergleich
+    - Die grossen Datensätze (kaggle, dogs_v5i) zeigten sehr hohe Kennzahlen (mAP@0.5 ≥ 0.95) und stabile Trainingsverläufe.
+    - Die kleineren Datensätze (asdf_v1i, dog_v1i) wiesen zunächst deutliche Schwankungen und niedrigere mAP-Werte (0.3–0.7) auf.
+
+3. Datenaugmentation & Upsampling
+Durch horizontale Flips, Helligkeits-/Kontraständerungen, leichte Verschiebungen/Rotationen und Rauschzugabe wurden die beiden kleinen Datensätze vervierfacht. Nach dem erneuten Split stiegen Precision, Recall und mAP für asdf_v1i auf ~0.68 und für dog_v1i auf ~0.82 – ein klarer Beleg für den Erfolg künstlicher Datenerweiterung.
+
+4. Fehleranalyse
+    - False Positives traten häufig an Bildrändern, bei ähnlichen Strukturen (Pfosten, Schatten, helle Flächen) oder durch ungenaue GT-Box-Definitionen auf.
+    - False Negatives zeigten sich hauptsächlich bei sehr kleinen, teilverdeckt oder in Graustufen abgebildeten Hunden.
+
+Mit dieser Methodik und den gezeigten Ergebnissen liegt eine robuste und reproduzierbare Trainings- und Evaluationspipeline für Hundedetektion mit YOLOv8 vor.
+
